@@ -1,0 +1,164 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signed(){return request.auth != null;}
+    function own(uid){return signed() && request.auth.uid==uid;}
+    function collector(){return signed() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role=='collector';}
+    function verified(uid){return get(/databases/$(database)/documents/users/$(uid)).data.role=='recycler' && get(/databases/$(database)/documents/users/$(uid)).data.authorizationStatus=='verified';}
+    function weight(w){return w is number && w>0 && w<=10000;}
+    function text(v,n){return v is string && v.size()<=n;}
+    function city(v){return v in ['Amritsar','Jalandhar','Ludhiana','Mumbai','Pune'];}
+    function material(v){return v in ['Copper','Aluminium','Iron','PCB','Battery','CRT','LCD','Cable','Motor'];}
+    function profile(d){
+      return d.keys().hasAll(['name','role','language','authorizationStatus','createdAt','updatedAt'])
+        && d.keys().hasOnly(['name','mobileNumber','mobileVerified','email','role','language','authorizationStatus','createdAt','updatedAt'])
+        && text(d.name,100) && d.name.size()>=2 && d.role in ['collector','recycler']
+        && d.language in ['en','hi','mr'] && d.authorizationStatus in ['notApplicable','pending','verified','rejected']
+        && d.createdAt is timestamp && d.updatedAt is timestamp
+        && (!d.keys().hasAny(['email']) || (d.email is string && request.auth.token.get('email','')!='' && d.email==request.auth.token.email))
+        && (!d.keys().hasAny(['mobileNumber','mobileVerified']) ||
+          (d.keys().hasAll(['mobileNumber','mobileVerified']) && d.mobileNumber is string && d.mobileNumber.matches('^[+]91[6-9][0-9]{9}$') && d.mobileVerified==false));
+    }
+    function req(rid){return get(/databases/$(database)/documents/recyclerRequests/$(rid)).data;}
+    function buyer(rid){return signed() && req(rid).recyclerUid==request.auth.uid && verified(request.auth.uid);}
+    function offerAfter(rid,oid){return getAfter(/databases/$(database)/documents/recyclerRequests/$(rid)/offers/$(oid)).data;}
+    function offerBefore(rid,oid){return get(/databases/$(database)/documents/recyclerRequests/$(rid)/offers/$(oid)).data;}
+    function lotBefore(uid,lid){return get(/databases/$(database)/documents/users/$(uid)/lots/$(lid)).data;}
+    function lotAfter(uid,lid){return getAfter(/databases/$(database)/documents/users/$(uid)/lots/$(lid)).data;}
+    function lotShape(d){return d.keys().hasAll(['material','weightKg','city','status','createdAt'])
+      && d.keys().hasOnly(['schemaVersion','material','weightKg','city','status','createdAt','updatedAt','revision','activeRequestId','activeOfferId','photoStorage'])
+      && material(d.material) && city(d.city) && weight(d.weightKg) && d.createdAt is timestamp
+      && d.status in ['draft','offered','reserved','handedOver','archived'];}
+    function v2lot(d){return lotShape(d) && d.schemaVersion==2 && d.revision is int && d.revision>0
+      && d.activeRequestId=='' && d.activeOfferId=='' && d.photoStorage=='deviceOnly' && d.updatedAt==request.time;}
+    match /users/{uid} {
+      allow get:if own(uid);
+      allow list,delete:if false;
+      allow create:if own(uid) && profile(request.resource.data)
+        && request.resource.data.keys().hasAll(['mobileNumber','mobileVerified'])
+        && request.resource.data.createdAt==request.time && request.resource.data.updatedAt==request.time
+        && ((request.resource.data.role=='collector' && request.resource.data.authorizationStatus=='notApplicable')
+          || (request.resource.data.role=='recycler' && request.resource.data.authorizationStatus=='pending'));
+      allow update:if own(uid) && profile(request.resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name','mobileNumber','mobileVerified','email','language','updatedAt'])
+        && request.resource.data.updatedAt==request.time;
+      match /lots/{lid} {
+        allow get:if (own(uid) && collector()) || (signed() && resource.data.get('activeRequestId','')!='' && buyer(resource.data.activeRequestId));
+        allow list:if own(uid) && collector();
+        allow create:if own(uid) && collector() && v2lot(request.resource.data)
+          && request.resource.data.status=='draft' && request.resource.data.revision==1 && request.resource.data.createdAt==request.time;
+        allow update:if lotShape(request.resource.data)
+          && request.resource.data.createdAt==resource.data.createdAt && request.resource.data.updatedAt==request.time
+          && (
+            // Offline metadata sync: optimistic revision and no outstanding offer.
+            (own(uid) && collector() && resource.data.status=='draft' && request.resource.data.status=='draft'
+              && v2lot(request.resource.data) && request.resource.data.revision==resource.data.get('revision',0)+1
+              && resource.data.get('activeOfferId','')=='')
+            ||
+            (own(uid) && collector() && resource.data.status=='draft' && request.resource.data.status=='archived'
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updatedAt']))
+            ||
+            (own(uid) && collector() && resource.data.status=='draft' && request.resource.data.status=='offered'
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','activeRequestId','activeOfferId','updatedAt'])
+              && offerAfter(request.resource.data.activeRequestId,request.resource.data.activeOfferId).collectorUid==uid
+              && offerAfter(request.resource.data.activeRequestId,request.resource.data.activeOfferId).lotId==lid
+              && offerAfter(request.resource.data.activeRequestId,request.resource.data.activeOfferId).status=='proposed'
+              && offerAfter(request.resource.data.activeRequestId,request.resource.data.activeOfferId).createdAt==request.time)
+            ||
+            (own(uid) && collector() && resource.data.status=='offered' && request.resource.data.status=='reserved'
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updatedAt'])
+              && offerBefore(resource.data.activeRequestId,resource.data.activeOfferId).status=='quoted'
+              && offerAfter(resource.data.activeRequestId,resource.data.activeOfferId).status=='accepted')
+            ||
+            (resource.data.status=='offered' && request.resource.data.status=='draft'
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','activeRequestId','activeOfferId','updatedAt'])
+              && request.resource.data.activeRequestId=='' && request.resource.data.activeOfferId==''
+              && ((own(uid) && collector() && offerAfter(resource.data.activeRequestId,resource.data.activeOfferId).status=='cancelled')
+                || (buyer(resource.data.activeRequestId) && offerAfter(resource.data.activeRequestId,resource.data.activeOfferId).status=='rejected')))
+            ||
+            (buyer(resource.data.activeRequestId) && resource.data.status=='reserved' && request.resource.data.status=='handedOver'
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updatedAt'])
+              && offerBefore(resource.data.activeRequestId,resource.data.activeOfferId).status=='handoverPending'
+              && offerAfter(resource.data.activeRequestId,resource.data.activeOfferId).status=='completed')
+          );
+        allow delete:if false;
+      }
+    }
+    match /recyclerRequests/{rid} {
+      allow read:if (collector() && resource.data.status=='active' && resource.data.authorizationStatus=='verified')
+        || (signed() && verified(request.auth.uid) && resource.data.recyclerUid==request.auth.uid);
+      // Trusted admin publication only. Tomorrow's recycler publisher must not
+      // simply remove this guard or let a client assert verified status.
+      allow create,update,delete:if false;
+      match /offers/{oid} {
+        function ownOffer(){return collector() && resource.data.collectorUid==request.auth.uid;}
+        function linkedBefore(){return lotBefore(resource.data.collectorUid,resource.data.lotId).activeOfferId==oid
+          && lotBefore(resource.data.collectorUid,resource.data.lotId).activeRequestId==rid;}
+        function releasedAfter(){return lotAfter(resource.data.collectorUid,resource.data.lotId).status=='draft'
+          && lotAfter(resource.data.collectorUid,resource.data.lotId).activeOfferId=='' && lotAfter(resource.data.collectorUid,resource.data.lotId).activeRequestId=='';}
+        allow get:if (collector() && (!exists(/databases/$(database)/documents/recyclerRequests/$(rid)/offers/$(oid)) || resource.data.collectorUid==request.auth.uid)) || buyer(rid);
+        allow list:if (collector() && resource.data.collectorUid==request.auth.uid) || buyer(rid);
+        allow create:if collector() && request.resource.data.keys().hasAll(['schemaVersion','collectorUid','lotId','material','weightKg','status','createdAt','requestId','recyclerUid','recyclerName','city'])
+          && request.resource.data.keys().hasOnly(['schemaVersion','collectorUid','lotId','material','weightKg','status','createdAt','requestId','recyclerUid','recyclerName','city'])
+          && request.resource.data.schemaVersion==2 && request.resource.data.collectorUid==request.auth.uid
+          && text(request.resource.data.lotId,128) && request.resource.data.lotId.matches('^[A-Za-z0-9_-]+$')
+          && oid==request.auth.uid+'_'+request.resource.data.lotId
+          && request.resource.data.requestId==rid && request.resource.data.status=='proposed' && request.resource.data.createdAt==request.time
+          && req(rid).status=='active' && req(rid).authorizationStatus=='verified' && req(rid).expiresAt is timestamp && req(rid).expiresAt>request.time
+          && verified(req(rid).recyclerUid) && request.resource.data.recyclerUid==req(rid).recyclerUid
+          && request.resource.data.recyclerName==req(rid).recyclerName && request.resource.data.city==req(rid).city
+          && request.resource.data.material==req(rid).material
+          && lotBefore(request.auth.uid,request.resource.data.lotId).status=='draft'
+          && lotBefore(request.auth.uid,request.resource.data.lotId).material==request.resource.data.material
+          && weight(request.resource.data.weightKg) && request.resource.data.weightKg==lotBefore(request.auth.uid,request.resource.data.lotId).weightKg
+          && lotAfter(request.auth.uid,request.resource.data.lotId).status=='offered'
+          && lotAfter(request.auth.uid,request.resource.data.lotId).activeRequestId==rid && lotAfter(request.auth.uid,request.resource.data.lotId).activeOfferId==oid;
+        allow update:if resource.data.schemaVersion==2 && linkedBefore()
+          && (
+            (buyer(rid) && resource.data.status=='proposed' && request.resource.data.status=='quoted'
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','quoteRate','quoteCurrency','quoteExpiresAt','quotedAt'])
+              && request.resource.data.quoteRate is number && request.resource.data.quoteRate>0 && request.resource.data.quoteRate<=10000000
+              && request.resource.data.quoteCurrency=='INR' && request.resource.data.quotedAt==request.time
+              && request.resource.data.quoteExpiresAt is timestamp && request.resource.data.quoteExpiresAt>request.time && request.resource.data.quoteExpiresAt<=request.time+duration.value(7,'d'))
+            ||
+            (buyer(rid) && resource.data.status in ['proposed','quoted'] && request.resource.data.status=='rejected'
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','rejectedAt']) && request.resource.data.rejectedAt==request.time && releasedAfter())
+            ||
+            (ownOffer() && resource.data.status in ['proposed','quoted'] && request.resource.data.status=='cancelled'
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','cancelledAt']) && request.resource.data.cancelledAt==request.time && releasedAfter())
+            ||
+            (ownOffer() && resource.data.status=='quoted' && request.resource.data.status=='accepted' && verified(resource.data.recyclerUid)
+              && resource.data.quoteExpiresAt>request.time && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','acceptedAt'])
+              && request.resource.data.acceptedAt==request.time && lotBefore(resource.data.collectorUid,resource.data.lotId).status=='offered'
+              && lotAfter(resource.data.collectorUid,resource.data.lotId).status=='reserved')
+            ||
+            (ownOffer() && resource.data.status=='accepted' && request.resource.data.status=='handoverPending' && verified(resource.data.recyclerUid)
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','handoverWeightKg','handoverRequestedAt'])
+              && weight(request.resource.data.handoverWeightKg) && request.resource.data.handoverRequestedAt==request.time)
+            ||
+            (buyer(rid) && resource.data.status=='handoverPending' && request.resource.data.status=='completed'
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','completedAt']) && request.resource.data.completedAt==request.time
+              && lotAfter(resource.data.collectorUid,resource.data.lotId).status=='handedOver')
+          );
+        allow delete:if false;
+      }
+    }
+    match /{parent=**}/offers/{oid} {
+      allow list:if collector() && resource.data.collectorUid==request.auth.uid;
+    }
+    match /collectorPayments/{pid} {
+      function offerFor(d){return get(/databases/$(database)/documents/recyclerRequests/$(d.requestId)/offers/$(d.offerId)).data;}
+      allow get:if collector() && (!exists(/databases/$(database)/documents/collectorPayments/$(pid)) || resource.data.collectorUid==request.auth.uid);
+      allow list:if collector() && resource.data.collectorUid==request.auth.uid;
+      allow create:if collector() && request.resource.data.keys().hasAll(['requestId','offerId','amount','currency','method','reference','collectorUid','kind','createdAt'])
+        && request.resource.data.keys().hasOnly(['requestId','offerId','amount','currency','method','reference','collectorUid','kind','createdAt'])
+        && request.resource.data.collectorUid==request.auth.uid && request.resource.data.kind=='collectorRecordedReceipt'
+        && request.resource.data.currency=='INR' && request.resource.data.amount is number && request.resource.data.amount>0 && request.resource.data.amount<=100000000
+        && request.resource.data.method in ['cash','upi','bank'] && text(request.resource.data.reference,100)
+        && request.resource.data.createdAt==request.time && offerFor(request.resource.data).collectorUid==request.auth.uid
+        && offerFor(request.resource.data).schemaVersion==2 && offerFor(request.resource.data).status=='completed';
+      allow update,delete:if false;
+    }
+    match /{document=**}{allow read,write:if false;}
+  }
+}

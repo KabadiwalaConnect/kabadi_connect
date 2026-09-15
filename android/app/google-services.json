@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "13198792219",
+    "project_id": "kabadiconnect-ad86b",
+    "storage_bucket": "kabadiconnect-ad86b.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:13198792219:android:92a12ef7684af545e9cabe",
+        "android_client_info": {
+          "package_name": "com.example.kabadi_connect"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA4TQmnO57IpdBBMbdKDWisxtBXwQdSsvw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
