@@ -22,6 +22,7 @@ import 'material_photos.dart';
 import 'recycler_directory_data.dart';
 import 'collector_chat_tools.dart';
 import 'collector_sell_requests.dart';
+import 'ewaste_classifier_service.dart';
 
 final _cs = CollectorStore.instance;
 
@@ -212,6 +213,9 @@ class _LotEditorState extends State<LotEditor> {
   String? _material, _photo, _message;
   bool _busy = false, _checked = false;
   late final TextEditingController _weight;
+  EwastePredictionResult? _prediction;
+  bool _isClassifying = false;
+
   @override
   void initState() {
     super.initState();
@@ -223,12 +227,30 @@ class _LotEditorState extends State<LotEditor> {
     _photo = v?['photoPath'] as String?;
     _weight = TextEditingController(text: v?['weightKg']?.toString() ?? '');
     _recover();
+    if (_photo != null) {
+      _classifyPhoto(_photo!);
+    }
   }
 
   @override
   void dispose() {
     _weight.dispose();
     super.dispose();
+  }
+
+  Future<void> _classifyPhoto(String path) async {
+    if (!mounted) return;
+    setState(() {
+      _isClassifying = true;
+      _prediction = null;
+    });
+    final res = await EwasteClassifierService.instance.classifyImage(path);
+    if (mounted) {
+      setState(() {
+        _prediction = res;
+        _isClassifying = false;
+      });
+    }
   }
 
   Map<String, dynamic> get _value => {
@@ -251,6 +273,7 @@ class _LotEditorState extends State<LotEditor> {
         if (mounted) {
           setState(() => _photo = path);
           await _cs.saveLocal(_value, base: widget.base);
+          _classifyPhoto(path);
         }
       }
       await prefs.remove(key);
@@ -289,6 +312,7 @@ class _LotEditorState extends State<LotEditor> {
             _checked = false;
           });
           await _cs.saveLocal(_value, base: widget.base);
+          _classifyPhoto(path);
         }
       }
       await prefs.remove(key);
@@ -402,6 +426,98 @@ class _LotEditorState extends State<LotEditor> {
             '\u092B\u094B\u091F\u094B \u092F\u093E\u091A \u092B\u094B\u0928\u091A\u094D\u092F\u093E \u0905\u0945\u092A\u092E\u0927\u094D\u092F\u0947 \u0930\u093E\u0939\u0940\u0932. \u0905\u092A\u0932\u094B\u0921 \u0915\u093F\u0902\u0935\u093E \u0930\u0940\u0938\u093E\u092F\u0915\u0932\u0915\u0930\u094D\u0924\u094D\u092F\u093E\u0936\u0940 \u0936\u0947\u0905\u0930 \u0939\u094B\u0923\u093E\u0930 \u0928\u093E\u0939\u0940; \u0935\u091C\u0928/\u0930\u091A\u0928\u0947\u091A\u093E \u092A\u0941\u0930\u093E\u0935\u093E \u0928\u093E\u0939\u0940.',
           ),
         ),
+        if (_isClassifying)
+          Card(
+            margin: const EdgeInsets.symmetric(vertical: 8.0),
+            child: Padding(
+              padding: const EdgeInsets.all(12.0),
+              child: Row(
+                children: [
+                  const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      ct(
+                        'Classifying e-waste photo offline...',
+                        '\u0908-\u0915\u091A\u0930\u093E \u092B\u094B\u091F\u094B \u0915\u093E \u0911\u092B\u0932\u093E\u0907\u0928 \u0935\u0930\u094D\u0917\u0940\u0915\u0930\u0923 \u0939\u094B \u0930\u0939\u093E \u0939\u0948...',
+                        '\u0908-\u0915\u091A\u0930\u093E \u092B\u094B\u091F\u094B\u091A\u0947 \u0911\u092B\u0932\u093E\u0907\u0928 \u0935\u0930\u094D\u0917\u0940\u0915\u0930\u0923 \u0939\u094B\u0924 \u0906\u0939\u0947...',
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          )
+        else if (_prediction != null)
+          Card(
+            color: Colors.green.shade50,
+            margin: const EdgeInsets.symmetric(vertical: 8.0),
+            child: Padding(
+              padding: const EdgeInsets.all(12.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.memory, color: Colors.green),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          ct(
+                            'AI Classifier Result (Offline)',
+                            'AI \u0935\u0930\u094D\u0917\u0940\u0915\u0930\u0923 \u092A\u0930\u093F\u0923\u093E\u092E (\u0911\u092B\u0932\u093E\u0907\u0928)',
+                            'AI \u0935\u0930\u094D\u0917\u0940\u0915\u0930\u0923 \u0928\u093F\u0915\u093E\u0932 (\u0911\u092B\u0932\u093E\u0907\u0928)',
+                          ),
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.green.shade900,
+                          ),
+                        ),
+                      ),
+                      Chip(
+                        label: Text(
+                          _prediction!.confidencePercentage,
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                        ),
+                        backgroundColor: Colors.green.shade100,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    '${ct('Predicted Category', '\u0905\u0928\u0941\u092E\u093E\u0928\u093F\u0924 \u0936\u094D\u0930\u0947\u0923\u0940', '\u0905\u0928\u0941\u092E\u093E\u0928\u093F\u0924 \u0936\u094D\u0930\u0947\u0923\u0940')}: ${_prediction!.displayLabel}',
+                    style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 8),
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.green.shade700,
+                      foregroundColor: Colors.white,
+                    ),
+                    onPressed: () {
+                      setState(() {
+                        _material = _prediction!.label;
+                        _checked = false;
+                      });
+                      AppSpeech.instance.say(materialLabel(_prediction!.label));
+                    },
+                    icon: const Icon(Icons.check_circle_outline, size: 18),
+                    label: Text(
+                      ct(
+                        'Apply ${_prediction!.displayLabel} suggestion',
+                        '\u0938\u0941\u091F\u093E\u0935 ${_prediction!.displayLabel} \u0932\u093E\u0917\u0942 \u0915\u0930\u0947\u0902',
+                        '${_prediction!.displayLabel} \u0938\u0941\u091A\u0928\u093E \u0932\u093E\u0917\u0942 \u0915\u0930\u093E',
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
         MaterialPhotoGrid(
           labelFor: materialLabel,
           selected: _material,

@@ -91,6 +91,7 @@ class _QuickRegistrationScreenState extends State<QuickRegistrationScreen> {
       final result = await (widget.service ?? QuickProfileService())
           .continueWithName(
             name: _name.text,
+            mobileNumber: '9999999999',
             role: widget.role,
             language: appLanguage.code,
           )

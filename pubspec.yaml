@@ -48,6 +48,8 @@ dependencies:
   path_provider: 2.1.6
   qr_flutter: 4.1.0
   url_launcher: 6.3.2
+  tflite_flutter: ^0.12.1
+  image: ^4.5.2
 
 dev_dependencies:
   flutter_test:
@@ -71,6 +73,7 @@ flutter:
   # the material Icons class.
   uses-material-design: true
   assets:
+    - assets/tflite/ewaste_classifier.tflite
     - assets/images/collector_welcome.png
     - assets/images/brand_logo.png
     - assets/images/language_footer.png
